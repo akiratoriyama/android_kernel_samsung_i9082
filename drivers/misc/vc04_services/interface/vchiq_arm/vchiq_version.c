@@ -1,8 +1,8 @@
 #include "vchiq_build_info.h"
 #include <linux/broadcom/vc_debug_sym.h>
 
-VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_hostname, "ZyXEL0" );
-VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_version, "536e22415cdfe7c63c23c8a36615bcf203607745 (tainted)" );
+VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_hostname, "akiratoriyama" );
+VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_version, "6a43329a08ec0282e951049ae15a497b121aa8ef (tainted)" );
 VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_time,    __TIME__ );
 VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_date,    __DATE__ );
 
