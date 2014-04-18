@@ -731,8 +731,6 @@ struct kona_freq_tbl kona_freq_tbl[] = {
 	FTBL_INIT(1200000, PI_PROC_OPP_TURBO),
 #else
 #ifdef CONFIG_CAPRI_PM_A1
-	FTBL_INIT(100000, PI_PROC_OPP_ECONOMY1),
-        FTBL_INIT(200000, PI_PROC_OPP_ECONOMY1),
 	FTBL_INIT(312000, PI_PROC_OPP_ECONOMY1),
 	FTBL_INIT(600000, PI_PROC_OPP_NORMAL),
 	FTBL_INIT(800000, PI_PROC_OPP_TURBO1),
@@ -1229,3 +1227,4 @@ void __init board_add_common_devices(void)
 
 	platform_device_register(&android_pmem);
 }
+
