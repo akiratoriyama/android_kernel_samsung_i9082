@@ -1,4 +1,4 @@
-#
+
 # NOTE! Don't add files that are generated in specific
 # subdirectories here. Add them in the ".gitignore" file
 # in that subdirectory instead.
@@ -6,6 +6,7 @@
 # NOTE! Please use 'git ls-files -i --exclude-standard'
 # command after changing this file, to see if there are
 # any tracked files which get ignored after the change.
+
 #
 # Normal rules
 #
@@ -36,7 +37,6 @@ modules.builtin
 #
 # Top-level generic files
 #
-/build
 /tags
 /TAGS
 /linux
@@ -60,6 +60,8 @@ include/linux/version.h
 include/generated
 arch/*/include/generated
 
+drivers/misc/vc04_services/interface/vchiq_arm/vchiq_version.c
+
 # stgit generated dirs
 patches-*
 
@@ -79,4 +81,11 @@ GTAGS
 
 *.orig
 *~
+*.swp
+*.bak
+*.old
 \#*#
+
+drivers/misc/vc04_services/interface/vchiq_arm/vchiq_version.c
+
+
