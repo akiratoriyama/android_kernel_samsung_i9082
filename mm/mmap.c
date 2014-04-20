@@ -245,6 +245,7 @@ static struct vm_area_struct *remove_vma(struct vm_area_struct *vma)
 			removed_exe_file_vma(vma->vm_mm);
 	}
 	mpol_put(vma_policy(vma));
+        uksm_remove_vma(vma);        
 	kmem_cache_free(vm_area_cachep, vma);
 	return next;
 }
@@ -516,7 +517,7 @@ int vma_adjust(struct vm_area_struct *vma, unsigned long start,
 	uksm_remove_vma(vma);
 
         if (next && !insert) {
-		struct vm_area_struct *exporter = NULL
+		struct vm_area_struct *exporter = NULL;
 
                 uksm_remove_vma(next);
 		if (end >= next->vm_end) {
@@ -642,7 +643,6 @@ again:			remove_next = 1 + (end > next->vm_end);
 			anon_vma_merge(vma, next);
 		mm->map_count--;
 		mpol_put(vma_policy(next));
-                uksm_remove_vma(vma);
 		kmem_cache_free(vm_area_cachep, next);
 		/*
 		 * In mprotect's case 6 (see comments on vma_merge),
