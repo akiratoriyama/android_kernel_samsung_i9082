@@ -275,8 +275,12 @@ SYSCALL_DEFINE1(fsync, unsigned int, fd)
 SYSCALL_DEFINE1(fdatasync, unsigned int, fd)
 {
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 #ifdef CONFIG_DYNAMIC_FSYNC
+=======
+#if 0
+>>>>>>> 34f3cde... dynamic fsync: don't disable fdatasync()
 	if (likely(dyn_fsync_active && !early_suspend_active))
 		return 0;
 	else
