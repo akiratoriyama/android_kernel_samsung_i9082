@@ -1,0 +1,42 @@
+From ce6ec1bcf9573184827bf550cf2deea98df4d133 Mon Sep 17 00:00:00 2001
+From: Alejandro Martinez Ruiz <alex@nowcomputing.com>
+Date: Thu, 24 Jan 2013 20:56:25 +0100
+Subject: [PATCH] Revert "f2fs: add remap_pages as generic_file_remap_pages"
+
+This reverts upstream commit 692bb55d1ab5b278181ff2e65f09eb0be6d50669.
+
+Aside from reverting the specific commit, implement the VM_CAN_NONLINEAR
+behavior for filemap_fault.
+
+Signed-off-by: Alejandro Martinez Ruiz <alex@nowcomputing.com>
+---
+ fs/f2fs/file.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/fs/f2fs/file.c b/fs/f2fs/file.c
+index 54a8404..c693ff8 100644
+--- a/fs/f2fs/file.c
++++ b/fs/f2fs/file.c
+@@ -105,9 +105,8 @@ out:
+ }
+ 
+ static const struct vm_operations_struct f2fs_file_vm_ops = {
+-	.fault		= filemap_fault,
+-	.page_mkwrite	= f2fs_vm_page_mkwrite,
+-	.remap_pages	= generic_file_remap_pages,
++	.fault        = filemap_fault,
++	.page_mkwrite = f2fs_vm_page_mkwrite,
+ };
+ 
+ static int get_parent_ino(struct inode *inode, nid_t *pino)
+@@ -203,6 +202,7 @@ static int f2fs_file_mmap(struct file *file, struct vm_area_struct *vma)
+ {
+ 	file_accessed(file);
+ 	vma->vm_ops = &f2fs_file_vm_ops;
++	vma->vm_flags |= VM_CAN_NONLINEAR;
+ 	return 0;
+ }
+ 
+-- 
+1.8.2.1.422.gdcd8c09
+
