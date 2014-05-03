@@ -18,6 +18,10 @@
 #include <linux/backing-dev.h>
 #include "internal.h"
 
+#ifdef CONFIG_ASYNC_FSYNC
+#include <linux/statfs.h>
+#endif
+
 #ifdef CONFIG_DYNAMIC_FSYNC
 extern bool early_suspend_active;
 extern bool dyn_fsync_active;
@@ -25,6 +29,15 @@ extern bool dyn_fsync_active;
 
 #define VALID_FLAGS (SYNC_FILE_RANGE_WAIT_BEFORE|SYNC_FILE_RANGE_WRITE| \
 			SYNC_FILE_RANGE_WAIT_AFTER)
+
+#ifdef CONFIG_ASYNC_FSYNC
+#define FLAG_ASYNC_FSYNC        0x1
+static struct workqueue_struct *fsync_workqueue = NULL;
+struct fsync_work {
+  struct work_struct work;
+  char pathname[256];
+};
+#endif
 
 /*
  * Do the filesystem syncing work. For simple filesystems
@@ -101,13 +114,67 @@ void sync_filesystems(int wait)
  * sync everything.  Start out by waking pdflush, because that writes back
  * all queues in parallel.
  */
-SYSCALL_DEFINE0(sync)
+static void do_sync(void)
 {
 	wakeup_flusher_threads(0);
 	sync_filesystems(0);
 	sync_filesystems(1);
 	if (unlikely(laptop_mode))
 		laptop_sync_completion();
+	return;
+}
+
+static DEFINE_MUTEX(sync_mutex);	/* One do_sync() at a time. */
+static unsigned long sync_seq;		/* Many sync()s from one do_sync(). */
+					/*  Overflow harmless, extra wait. */
+
+/*
+ * Only allow one task to do sync() at a time, and further allow
+ * concurrent sync() calls to be satisfied by a single do_sync()
+ * invocation.
+ */
+SYSCALL_DEFINE0(sync)
+{
+	unsigned long snap;
+	unsigned long snap_done;
+
+	snap = ACCESS_ONCE(sync_seq);
+	smp_mb();  /* Prevent above from bleeding into critical section. */
+	mutex_lock(&sync_mutex);
+	snap_done = sync_seq;
+
+	/*
+	 * If the value in snap is odd, we need to wait for the current
+	 * do_sync() to complete, then wait for the next one, in other
+	 * words, we need the value of snap_done to be three larger than
+	 * the value of snap.  On the other hand, if the value in snap is
+	 * even, we only have to wait for the next request to complete,
+	 * in other words, we need the value of snap_done to be only two
+	 * greater than the value of snap.  The "(snap + 3) & 0x1" computes
+	 * this for us (thank you, Linus!).
+	 */
+	if (ULONG_CMP_GE(snap_done, (snap + 3) & ~0x1)) {
+		/*
+		 * A full do_sync() executed between our two fetches from
+		 * sync_seq, so our work is done!
+		 */
+		smp_mb(); /* Order test with caller's subsequent code. */
+		mutex_unlock(&sync_mutex);
+		return 0;
+	}
+
+	/* Record the start of do_sync(). */
+	ACCESS_ONCE(sync_seq)++;
+	WARN_ON_ONCE((sync_seq & 0x1) != 1);
+	smp_mb(); /* Keep prior increment out of do_sync(). */
+
+	do_sync();
+
+	/* Record the end of do_sync(). */
+	smp_mb(); /* Keep subsequent increment out of do_sync(). */
+	ACCESS_ONCE(sync_seq)++;
+	WARN_ON_ONCE((sync_seq & 0x1) != 0);
+	mutex_unlock(&sync_mutex);
 	return 0;
 }
 
@@ -174,23 +241,10 @@ int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
 	int err, ret;
 
 	#ifdef CONFIG_DYNAMIC_FSYNC
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-        if (!early_suspend_active)
-        return 0;
-=======
-	if (dyn_fsync_active && !early_suspend_active)
-=======
-	if (unlikely(dyn_fsync_active && !early_suspend_active))
->>>>>>> 4b81155... dynamic filesync: add some cache optimizations
-=======
 	if (likely(dyn_fsync_active && !early_suspend_active))
->>>>>>> 6ac6c87... dynamic fsync: favor true case since most will be using this feature
 		return 0;
->>>>>>> 62fec00... fs/dyn_fsync: check if dyn fsync control is active prior to performing fsync operations
 	else {
-        #endif
+	#endif
 
 	if (!file->f_op || !file->f_op->fsync) {
 		ret = -EINVAL;
@@ -212,7 +266,7 @@ int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
 out:
 	return ret;
 #ifdef CONFIG_DYNAMIC_FSYNC
-        }
+	}
 #endif
 }
 EXPORT_SYMBOL(vfs_fsync_range);
@@ -231,15 +285,113 @@ int vfs_fsync(struct file *file, int datasync)
 }
 EXPORT_SYMBOL(vfs_fsync);
 
+#ifdef CONFIG_ASYNC_FSYNC
+extern int emmc_perf_degr(void);
+#define LOW_STORAGE_THRESHOLD   786432
+int async_fsync(struct file *file, int fd)
+{
+  struct inode *inode = file->f_mapping->host;
+  struct super_block *sb = inode->i_sb;
+  struct kstatfs st;
+ 
+  if ((sb->fsync_flags & FLAG_ASYNC_FSYNC) == 0)
+    return 0;
+ 
+  if (!emmc_perf_degr())
+    return 0;
+ 
+  if (fd_statfs(fd, &st))
+    return 0;
+ 
+  if (st.f_bfree > LOW_STORAGE_THRESHOLD)
+    return 0;
+ 
+  return 1;
+}
+ 
+static int do_async_fsync(char *pathname)
+{
+  struct file *file;
+  int ret;
+  file = filp_open(pathname, O_RDWR, 0);
+  if (IS_ERR(file)) {
+    pr_debug("%s: can't open %s\n", __func__, pathname);
+    return -EBADF;
+  }
+  ret = vfs_fsync(file, 0);
+ 
+  filp_close(file, NULL);
+  return ret;
+}
+ 
+static void do_afsync_work(struct work_struct *work)
+{
+  struct fsync_work *fwork =
+    container_of(work, struct fsync_work, work);
+  int ret = -EBADF;
+ 
+  pr_debug("afsync: %s\n", fwork->pathname);
+  ret = do_async_fsync(fwork->pathname);
+  if (ret != 0 && ret != -EBADF)
+    pr_info("afsync return %d\n", ret);
+  else
+    pr_debug("afsync: %s done\n", fwork->pathname);
+  kfree(fwork);
+}
+#endif
+
 static int do_fsync(unsigned int fd, int datasync)
 {
 	struct file *file;
 	int ret = -EBADF;
+	int fput_needed;
 
-	file = fget(fd);
+#ifdef CONFIG_ASYNC_FSYNC
+  	struct fsync_work *fwork;
+#endif
+
+	file = fget_light(fd, &fput_needed);
 	if (file) {
+
+    ktime_t fsync_t, fsync_diff;
+    char pathname[256], *path;
+    path = d_path(&(file->f_path), pathname, sizeof(pathname));
+    if (IS_ERR(path))
+      path = "(unknown)";
+#ifdef CONFIG_ASYNC_FSYNC
+    else if (async_fsync(file, fd)) {
+      if (!fsync_workqueue)
+        fsync_workqueue =
+          create_singlethread_workqueue("fsync");
+      if (!fsync_workqueue)
+        goto no_async;
+
+      if (IS_ERR(path))
+        goto no_async;
+
+      fwork = kmalloc(sizeof(*fwork), GFP_KERNEL);
+      if (fwork) {
+        strncpy(fwork->pathname, path,
+          sizeof(fwork->pathname) - 1);
+        INIT_WORK(&fwork->work, do_afsync_work);
+        queue_work(fsync_workqueue, &fwork->work);
+        fput_light(file, fput_needed);
+        return 0;
+      }
+    }
+no_async:
+#endif
+    fsync_t = ktime_get();
 		ret = vfs_fsync(file, datasync);
-		fput(file);
+		fput_light(file, fput_needed);
+    		fsync_diff = ktime_sub(ktime_get(), fsync_t);
+    	    	if (ktime_to_ms(fsync_diff) >= 5000) {
+                        pr_info("VFS: %s pid:%d(%s)(parent:%d/%s)\
+        		takes %lld ms to fsync %s.\n", __func__,
+        		current->pid, current->comm,
+        		current->parent->pid, current->parent->comm,
+        	ktime_to_ms(fsync_diff), path);
+    	    	}
 	}
 	return ret;
 }
@@ -247,45 +399,20 @@ static int do_fsync(unsigned int fd, int datasync)
 SYSCALL_DEFINE1(fsync, unsigned int, fd)
 {
 #ifdef CONFIG_DYNAMIC_FSYNC
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-        if (!early_suspend_active)
-                 return 0;
-        else
-=======
-	if (dyn_fsync_active && !early_suspend_active)
-=======
-	if (unlikely(dyn_fsync_active && !early_suspend_active))
->>>>>>> 4b81155... dynamic filesync: add some cache optimizations
-=======
 	if (likely(dyn_fsync_active && !early_suspend_active))
->>>>>>> 6ac6c87... dynamic fsync: favor true case since most will be using this feature
 		return 0;
 	else
->>>>>>> 62fec00... fs/dyn_fsync: check if dyn fsync control is active prior to performing fsync operations
 #endif
-#ifdef CONFIG_DYNAMIC_FSYNC
-        if (!early_suspend_active)
-                 return 0;
-        else
 	return do_fsync(fd, 0);
 }
 
 SYSCALL_DEFINE1(fdatasync, unsigned int, fd)
 {
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-#ifdef CONFIG_DYNAMIC_FSYNC
-=======
 #if 0
->>>>>>> 34f3cde... dynamic fsync: don't disable fdatasync()
 	if (likely(dyn_fsync_active && !early_suspend_active))
 		return 0;
 	else
 #endif
->>>>>>> 62fec00... fs/dyn_fsync: check if dyn fsync control is active prior to performing fsync operations
 	return do_fsync(fd, 1);
 }
 
@@ -357,24 +484,11 @@ SYSCALL_DEFINE(sync_file_range)(int fd, loff_t offset, loff_t nbytes,
 				unsigned int flags)
 {
 #ifdef CONFIG_DYNAMIC_FSYNC
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-        if (!early_suspend_active)
-                return 0;
-        else {
-=======
-	if (dyn_fsync_active && !early_suspend_active)
-=======
-	if (unlikely(dyn_fsync_active && !early_suspend_active))
->>>>>>> 4b81155... dynamic filesync: add some cache optimizations
-=======
 	if (likely(dyn_fsync_active && !early_suspend_active))
->>>>>>> 6ac6c87... dynamic fsync: favor true case since most will be using this feature
 		return 0;
 	else {
->>>>>>> 62fec00... fs/dyn_fsync: check if dyn fsync control is active prior to performing fsync operations
 #endif
+
 	int ret;
 	struct file *file;
 	struct address_space *mapping;
@@ -455,7 +569,7 @@ out_put:
 out:
 	return ret;
 #ifdef CONFIG_DYNAMIC_FSYNC
-         }
+	}
 #endif
 }
 #ifdef CONFIG_HAVE_SYSCALL_WRAPPERS
@@ -474,23 +588,9 @@ SYSCALL_DEFINE(sync_file_range2)(int fd, unsigned int flags,
 				 loff_t offset, loff_t nbytes)
 {
 #ifdef CONFIG_DYNAMIC_FSYNC
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-       if (!early_suspend_active)
-               return 0;
-       else
-=======
-	if (dyn_fsync_active && !early_suspend_active)
-=======
-	if (unlikely(dyn_fsync_active && !early_suspend_active))
->>>>>>> 4b81155... dynamic filesync: add some cache optimizations
-=======
 	if (likely(dyn_fsync_active && !early_suspend_active))
->>>>>>> 6ac6c87... dynamic fsync: favor true case since most will be using this feature
 		return 0;
 	else
->>>>>>> 62fec00... fs/dyn_fsync: check if dyn fsync control is active prior to performing fsync operations
 #endif
 	return sys_sync_file_range(fd, offset, nbytes, flags);
 }
