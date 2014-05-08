@@ -2,11 +2,7 @@
 #include <linux/broadcom/vc_debug_sym.h>
 
 VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_hostname, "akiratoriyama" );
-<<<<<<< HEAD
-VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_version, "11b413cc8f93fec79f99ac541cef00a82b136a6f (tainted)" );
-=======
-VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_version, "c3d8647189ead1fc1f69a65d95f518e7185bfcaf (tainted)" );
->>>>>>> 9da1439... addded piggy.xzkern and modify .gitignore
+VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_version, "6934a084c7a8e45ffb786aaa8174beeba70b954e (tainted)" );
 VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_time,    __TIME__ );
 VC_DEBUG_DECLARE_STRING_VAR( vchiq_build_date,    __DATE__ );
 
